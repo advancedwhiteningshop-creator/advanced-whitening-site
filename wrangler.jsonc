@@ -1,0 +1,11 @@
+{
+  "name": "advanced-whitening-site",
+  "main": "advanced-whitening-site (1)/_worker.js",
+  "compatibility_date": "2025-09-01",
+  "workers_dev": true,
+  "assets": {
+    "directory": "advanced-whitening-site (1)",
+    "binding": "ASSETS",
+    "not_found_handling": "404-page"
+  }
+}
