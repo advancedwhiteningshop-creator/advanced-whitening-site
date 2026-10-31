@@ -78,6 +78,70 @@ async function checkout(request, env) {
   return json({url: d.url});
 }
 
+// ---------------------------------------------------------------------------
+// GET /admin/dsers-orders.csv?token=...&since=YYYY-MM-DD
+// Paid Stripe orders in DSers' order-import column layout. Protected by the
+// ADMIN_TOKEN secret. "since" defaults to 3 days ago (UTC).
+const DSERS_PRODUCT_ID = "LUXE";
+const DSERS_SKU = {p5: "LUXE-05", p7: "LUXE-07", p10: "LUXE-10", p14: "LUXE-14", p16: "LUXE-16", p20: "LUXE-20"};
+const DSERS_HEADERS = ["Order_number", "Date", "Country(Short Name of Country)", "Product_id", "Sku", "Product_count",
+  "Order_memo", "Contact_person", "Mobile_no", "Email(Optional)", "Address", "Address2", "Province", "City", "ZIP",
+  "RUT(Chile; Optional)", "Personal Clearance ID(Korea, Oman; Optional)",
+  "Passport/Alien registration Card Number(Korea, Oman; Optional)", "CPF(Brazil; Optional)",
+  "Turkish ID Number(Turkey; Optional)", "Passport Number(Turkey; Optional)", "RUC(Peru; Optional)",
+  "RFC/CURP(Mexico; Optional)", "Birthday(Brazil; Optional)example:DDMMYYYY"];
+
+const csvCell = v => {
+  const t = v == null ? "" : String(v);
+  return /[",\n\r]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t;
+};
+
+async function dsersExport(url, env) {
+  if (!env.ADMIN_TOKEN || url.searchParams.get("token") !== env.ADMIN_TOKEN) return new Response("Not found", {status: 404});
+  if (!env.STRIPE_SECRET_KEY) return new Response("Stripe not connected", {status: 503});
+  const sinceParam = url.searchParams.get("since");
+  const since = sinceParam ? Date.parse(sinceParam + "T00:00:00Z") : Date.now() - 3 * 86400000;
+  if (isNaN(since)) return new Response("Bad 'since' date, use YYYY-MM-DD", {status: 400});
+
+  const rows = [DSERS_HEADERS];
+  let startingAfter = null;
+  for (let page = 0; page < 20; page++) {
+    const q = new URLSearchParams({limit: "100", "created[gte]": String(Math.floor(since / 1000))});
+    if (startingAfter) q.set("starting_after", startingAfter);
+    const r = await fetch("https://api.stripe.com/v1/checkout/sessions?" + q, {
+      headers: {"Authorization": `Bearer ${env.STRIPE_SECRET_KEY}`},
+    });
+    const d = await r.json();
+    if (!r.ok) return new Response("Stripe error: " + (d.error && d.error.message), {status: 502});
+    for (const s of d.data) {
+      if (s.payment_status !== "paid" || !s.metadata || !s.metadata.packs) continue;
+      const ship = (s.collected_information && s.collected_information.shipping_details) || s.shipping_details || {};
+      const cust = s.customer_details || {};
+      const a = ship.address || cust.address || {};
+      const orderNo = "AW-" + s.id.slice(-10).toUpperCase();
+      const date = new Date(s.created * 1000).toISOString().slice(0, 10);
+      for (const part of s.metadata.packs.split(",")) {
+        const [id, qty] = part.split("x");
+        if (!DSERS_SKU[id]) continue;
+        rows.push([orderNo, date, a.country || "GB", DSERS_PRODUCT_ID, DSERS_SKU[id], qty || "1", "",
+          ship.name || cust.name || "", cust.phone || "", cust.email || "",
+          a.line1 || "", a.line2 || "", a.state || a.city || "", a.city || "", a.postal_code || ""]);
+      }
+    }
+    if (!d.has_more || !d.data.length) break;
+    startingAfter = d.data[d.data.length - 1].id;
+  }
+  const body = "﻿" + rows.map(r => {
+    const full = r.concat(Array(DSERS_HEADERS.length - r.length).fill(""));
+    return full.map(csvCell).join(",");
+  }).join("\r\n") + "\r\n";
+  return new Response(body, {headers: {
+    "Content-Type": "text/csv; charset=utf-8",
+    "Content-Disposition": `attachment; filename="dsers-orders-${new Date().toISOString().slice(0, 10)}.csv"`,
+    "Cache-Control": "no-store",
+  }});
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -85,6 +149,7 @@ export default {
       if (request.method !== "POST") return json({error: "Method not allowed."}, 405);
       return checkout(request, env);
     }
+    if (url.pathname === "/admin/dsers-orders.csv") return dsersExport(url, env);
     return env.ASSETS.fetch(request);
   },
 };
