@@ -11,7 +11,7 @@ const PACKS = [
 ];
 // Offer (same as the old store): the most expensive pack in the basket is full price;
 // every additional pack is 30% off. Rounded per pack, exactly as the checkout function does.
-const DISCOUNT = 0.30;
+const DISCOUNT = 0;   // multi-pack offer switched off for now; set to 0.30 to restore
 const MAX_QTY = 10;
 const $ = id => document.getElementById(id);
 const gbp = n => "£" + n.toFixed(2);
@@ -56,7 +56,7 @@ function renderBasket(){
       <div class="lp">${line < p.price * l.qty - 0.001 ? `<s>${gbp(p.price * l.qty)}</s>` : ""}${gbp(line)}</div></div>`;
   }).join("") : `<p class="empty">Your basket is empty.</p>`;
   $("drawerTotal").textContent = gbp(t.total);
-  $("drawerNote").textContent = !basket.length ? "" : t.disc ? `30% off 2nd pack applied: you save ${gbp(t.full - t.total)}` : "Add a 2nd pack and get 30% off it";
+  $("drawerNote").textContent = (DISCOUNT && basket.length) ? (t.disc ? `${DISCOUNT*100}% off 2nd pack applied: you save ${gbp(t.full - t.total)}` : `Add a 2nd pack and get ${DISCOUNT*100}% off it`) : "";
   $("checkoutBtn").disabled = !basket.length;
 }
 function openDrawer(){ $("drawer").classList.add("open"); $("drawer").setAttribute("aria-hidden","false"); $("drawerBg").hidden = false; }

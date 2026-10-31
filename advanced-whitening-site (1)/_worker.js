@@ -10,7 +10,7 @@ const PACKS = {
   p16: {pouches: 16, pence: 5995, name: "32 strips"},
   p20: {pouches: 20, pence: 6995, name: "Full box, 40 strips"},
 };
-const DISCOUNT = 0.30;   // most expensive pack full price; every additional pack 30% off
+const DISCOUNT = 0;   // multi-pack offer switched off for now; 0.30 = 30% off every additional pack
 const MAX_QTY = 10;
 const PRODUCT = "Crest 3D White Whitestrips LUXE";
 
@@ -50,7 +50,7 @@ async function checkout(request, env) {
   f.append("shipping_address_collection[allowed_countries][0]", "GB");
   f.append("phone_number_collection[enabled]", "true");
   f.append("metadata[packs]", Object.entries(merged).map(([id, q]) => `${id}x${q}`).join(","));
-  f.append("metadata[discount]", discounted ? "extra_packs_30pct" : "none");
+  f.append("metadata[discount]", discounted && DISCOUNT ? `extra_packs_${DISCOUNT*100}pct` : "none");
 
   lines.forEach(([id, qty, unit, isDisc], i) => {
     const p = PACKS[id];
@@ -58,7 +58,7 @@ async function checkout(request, env) {
     f.append(`line_items[${i}][price_data][currency]`, "gbp");
     f.append(`line_items[${i}][price_data][unit_amount]`, String(unit));
     f.append(`line_items[${i}][price_data][product_data][name]`, `${PRODUCT} · ${p.pouches} pouches`);
-    f.append(`line_items[${i}][price_data][product_data][description]`, p.name + (isDisc ? " · 30% off 2nd pack" : ""));
+    f.append(`line_items[${i}][price_data][product_data][description]`, p.name + (isDisc && DISCOUNT ? ` · ${DISCOUNT*100}% off 2nd pack` : ""));
     f.append(`line_items[${i}][price_data][product_data][metadata][pack]`, id);
   });
 
