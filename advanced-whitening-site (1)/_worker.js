@@ -372,6 +372,35 @@ async function trackingUpdate(request, url, env) {
   return jsonRes({results});
 }
 
+// GET /api/order?session_id=cs_...  -> {paid, order, value, currency}; used by the thank-you page for Google Ads conversion value
+async function orderSummary(url, env) {
+  const id = url.searchParams.get("session_id") || "";
+  const h = {"Content-Type": "application/json", "Cache-Control": "no-store"};
+  if (!/^cs_(live|test)_[A-Za-z0-9]{10,}$/.test(id) || !env.STRIPE_SECRET_KEY) return new Response('{"paid":false}', {status: 400, headers: h});
+  const r = await fetch("https://api.stripe.com/v1/checkout/sessions/" + id, {headers: {"Authorization": `Bearer ${env.STRIPE_SECRET_KEY}`}});
+  if (!r.ok) return new Response('{"paid":false}', {status: 404, headers: h});
+  const s = await r.json();
+  return new Response(JSON.stringify({paid: s.payment_status === "paid", order: "AW-" + s.id.slice(-10).toUpperCase(),
+    value: (s.amount_total || 0) / 100, currency: String(s.currency || "gbp").toUpperCase()}), {headers: h});
+}
+
+// Google Ads tag, injected into every HTML page served (so page files don't need re-uploading).
+const GADS_ID = "AW-18549328237";
+const GADS_PURCHASE = "AW-18549328237/Z5vYCOql768dEO2SgY1F";
+const GTAG_HEAD = `<script async src="https://www.googletagmanager.com/gtag/js?id=${GADS_ID}"></script>
+<script>window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments);}gtag('js',new Date());gtag('config','${GADS_ID}');</script>
+`;
+const CONVERSION_JS = `<script>(function(){var id=new URLSearchParams(location.search).get("session_id");if(!id)return;var k="aw_conv_"+id;try{if(localStorage.getItem(k))return;}catch(e){}
+fetch("/api/order?session_id="+encodeURIComponent(id)).then(function(r){return r.ok?r.json():null;}).then(function(d){if(!d||!d.paid)return;
+gtag("event","conversion",{send_to:"${GADS_PURCHASE}",value:d.value,currency:d.currency,transaction_id:d.order});try{localStorage.setItem(k,"1");}catch(e){}}).catch(function(){});})();</script>
+`;
+async function withTags(res, url) {
+  if (!(res.headers.get("content-type") || "").includes("text/html")) return res;
+  let rw = new HTMLRewriter().on("head", {element(e) { e.append(GTAG_HEAD, {html: true}); }});
+  if (url.pathname.startsWith("/thank-you")) rw = rw.on("body", {element(e) { e.append(CONVERSION_JS, {html: true}); }});
+  return rw.transform(res);
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -381,11 +410,12 @@ export default {
     }
     if (url.pathname === "/admin/dsers-orders.csv") return dsersExport(url, env);
     if (url.pathname === "/admin/test-email") return testEmail(url, env);
+    if (url.pathname === "/api/order") return orderSummary(url, env);
     if (url.pathname === "/admin/tracking") return trackingUpdate(request, url, env);
     if (url.pathname === "/api/stripe-webhook") {
       if (request.method !== "POST") return new Response("Method not allowed", {status: 405});
       return stripeWebhook(request, env);
     }
-    return env.ASSETS.fetch(request);
+    return withTags(await env.ASSETS.fetch(request), url);
   },
 };
