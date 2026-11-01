@@ -79,7 +79,7 @@ async function checkout(request, env) {
 }
 
 // ---------------------------------------------------------------------------
-// GET /admin/dsers-orders.csv?token=...&since=YYYY-MM-DD
+// GET /admin/dsers-orders.csv?token=...&since=YYYY-MM-DD   (or &hours=24 for the last 24 hours)
 // Paid Stripe orders in DSers' order-import column layout. Protected by the
 // ADMIN_TOKEN secret. "since" defaults to 3 days ago (UTC).
 const DSERS_PRODUCT_ID = "LUXE";
@@ -100,7 +100,10 @@ async function dsersExport(url, env) {
   if (!env.ADMIN_TOKEN || url.searchParams.get("token") !== env.ADMIN_TOKEN) return new Response("Not found", {status: 404});
   if (!env.STRIPE_SECRET_KEY) return new Response("Stripe not connected", {status: 503});
   const sinceParam = url.searchParams.get("since");
-  const since = sinceParam ? Date.parse(sinceParam + "T00:00:00Z") : Date.now() - 3 * 86400000;
+  const hoursParam = Number(url.searchParams.get("hours"));
+  const since = sinceParam ? Date.parse(sinceParam + "T00:00:00Z")
+    : hoursParam > 0 ? Date.now() - Math.min(hoursParam, 24 * 31) * 3600000
+    : Date.now() - 3 * 86400000;
   if (isNaN(since)) return new Response("Bad 'since' date, use YYYY-MM-DD", {status: 400});
 
   const rows = [DSERS_HEADERS];
