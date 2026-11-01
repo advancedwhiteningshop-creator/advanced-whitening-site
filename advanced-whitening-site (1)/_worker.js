@@ -270,6 +270,105 @@ async function stripeWebhook(request, env) {
   return new Response("Sent " + mail.orderNo, {status: 200});
 }
 
+// ---------------------------------------------------------------------------
+// POST /admin/tracking?token=...   body: {"orders":[{"order":"AW-XXXXXXXXXX","tracking":"LP0000..."}]}
+// Emails each customer their tracking number once. "Sent" is recorded on the Stripe
+// PaymentIntent metadata (tracking_number, tracking_emailed) so repeat calls never re-send.
+// Add &dry=1 to see what would happen without sending. GET /admin/tracking?token=...&test=1 sends a sample to hello@.
+const trackUrl = n => "https://t.17track.net/en#nums=" + encodeURIComponent(n);
+
+function trackingEmail(s, tracking) {
+  const orderNo = "AW-" + s.id.slice(-10).toUpperCase();
+  const ship = (s.collected_information && s.collected_information.shipping_details) || s.shipping_details || {};
+  const cust = s.customer_details || {};
+  const name = ship.name || cust.name || "";
+  const first = name.split(" ")[0] || "there";
+  const html = `<!doctype html><html><body style="margin:0;background:#f4f6fb;font-family:Arial,Helvetica,sans-serif;color:#131838">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f4f6fb;padding:24px 0"><tr><td align="center">
+<table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background:#ffffff;border-radius:16px;overflow:hidden">
+<tr><td style="background:#4c2fd0;color:#ffffff;padding:22px 28px;font-size:20px;font-weight:bold">Advanced Whitening</td></tr>
+<tr><td style="padding:28px">
+<h1 style="margin:0 0 8px;font-size:24px">Your order is on its way, ${esc(first)}!</h1>
+<p style="margin:0 0 20px;color:#59617f">Order <b>${orderNo}</b> has been dispatched.</p>
+<p style="margin:0 0 6px">Tracking number:</p>
+<p style="margin:0 0 20px;font-size:18px;font-weight:bold;letter-spacing:.5px">${esc(tracking)}</p>
+<p style="margin:0 0 24px"><a href="${trackUrl(tracking)}" style="display:inline-block;background:#4c2fd0;color:#ffffff;text-decoration:none;padding:12px 22px;border-radius:999px;font-weight:bold">Track your parcel</a></p>
+<p style="margin:0;line-height:1.6;color:#59617f">Tracking can take 1–2 working days to show the first update. Delivery usually takes 5–10 working days from dispatch.</p>
+<p style="margin:24px 0 0;line-height:1.6">Questions? Reply to this email or contact <a href="mailto:hello@advancedteethwhitening.co.uk" style="color:#4c2fd0">hello@advancedteethwhitening.co.uk</a>.</p>
+</td></tr>
+<tr><td style="padding:18px 28px;background:#f4f6fb;color:#59617f;font-size:12px">Advanced Whitening · advancedteethwhitening.co.uk</td></tr>
+</table></td></tr></table></body></html>`;
+  return {orderNo, to: cust.email, toName: name, subject: `Your order ${orderNo} has shipped`, html};
+}
+
+async function stripeApi(env, path, form) {
+  const r = await fetch("https://api.stripe.com/v1/" + path, {
+    method: form ? "POST" : "GET",
+    headers: {"Authorization": `Bearer ${env.STRIPE_SECRET_KEY}`, ...(form ? {"Content-Type": "application/x-www-form-urlencoded"} : {})},
+    body: form ? new URLSearchParams(form) : undefined,
+  });
+  const d = await r.json();
+  if (!r.ok) throw new Error("Stripe: " + (d.error && d.error.message));
+  return d;
+}
+
+async function trackingUpdate(request, url, env) {
+  const jsonRes = (b, st = 200) => new Response(JSON.stringify(b), {status: st, headers: {"Content-Type": "application/json", "Cache-Control": "no-store"}});
+  if (!env.ADMIN_TOKEN || url.searchParams.get("token") !== env.ADMIN_TOKEN) return new Response("Not found", {status: 404});
+  if (!env.STRIPE_SECRET_KEY || !env.ZEPTOMAIL_TOKEN) return jsonRes({error: "Stripe or email not configured"}, 503);
+  if (request.method === "GET" && url.searchParams.get("test") === "1") {
+    const sample = {id: "cs_test_SAMPLE00000", customer_details: {email: SHOP_FROM.address, name: "Sample Customer"}};
+    const mail = trackingEmail(sample, "LP00123456789012");
+    mail.subject = "[TEST] " + mail.subject;
+    return jsonRes(await sendMail(env, mail));
+  }
+  if (request.method !== "POST") return new Response("Method not allowed", {status: 405});
+  let body; try { body = await request.json(); } catch { return jsonRes({error: "Bad JSON"}, 400); }
+  const wanted = new Map();
+  for (const o of (body.orders || [])) {
+    const order = String(o.order || "").trim().toUpperCase(), tracking = String(o.tracking || "").trim();
+    if (/^AW-[A-Z0-9]{10}$/.test(order) && /^[A-Za-z0-9-]{6,40}$/.test(tracking)) wanted.set(order, tracking);
+  }
+  if (!wanted.size) return jsonRes({results: []});
+  const dry = url.searchParams.get("dry") === "1";
+  const results = [];
+  try {
+    // find the Checkout Sessions for these order numbers (last 90 days)
+    const since = Math.floor(Date.now() / 1000) - 90 * 86400;
+    const found = new Map();
+    let after = null;
+    for (let page = 0; page < 20 && found.size < wanted.size; page++) {
+      const q = new URLSearchParams({limit: "100", "created[gte]": String(since)});
+      if (after) q.set("starting_after", after);
+      const d = await stripeApi(env, "checkout/sessions?" + q);
+      for (const s of d.data) {
+        const no = "AW-" + s.id.slice(-10).toUpperCase();
+        if (wanted.has(no) && s.payment_status === "paid") found.set(no, s);
+      }
+      if (!d.has_more || !d.data.length) break;
+      after = d.data[d.data.length - 1].id;
+    }
+    for (const [order, tracking] of wanted) {
+      const s = found.get(order);
+      if (!s) { results.push({order, result: "order not found"}); continue; }
+      if (!s.payment_intent) { results.push({order, result: "no payment record"}); continue; }
+      const pi = await stripeApi(env, "payment_intents/" + s.payment_intent);
+      const md = pi.metadata || {};
+      if (md.tracking_emailed && md.tracking_number === tracking) { results.push({order, result: "already emailed"}); continue; }
+      const mail = trackingEmail(s, tracking);
+      if (!mail.to) { results.push({order, result: "no customer email"}); continue; }
+      if (dry) { results.push({order, result: md.tracking_emailed ? "would email (new tracking number)" : "would email"}); continue; }
+      const res = await sendMail(env, mail);
+      if (!res.ok) { results.push({order, result: "email failed " + res.status}); continue; }
+      await stripeApi(env, "payment_intents/" + s.payment_intent, {"metadata[tracking_number]": tracking, "metadata[tracking_emailed]": new Date().toISOString()});
+      results.push({order, result: "emailed"});
+    }
+  } catch (e) {
+    return jsonRes({error: String(e.message || e), results}, 502);
+  }
+  return jsonRes({results});
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -279,6 +378,7 @@ export default {
     }
     if (url.pathname === "/admin/dsers-orders.csv") return dsersExport(url, env);
     if (url.pathname === "/admin/test-email") return testEmail(url, env);
+    if (url.pathname === "/admin/tracking") return trackingUpdate(request, url, env);
     if (url.pathname === "/api/stripe-webhook") {
       if (request.method !== "POST") return new Response("Method not allowed", {status: 405});
       return stripeWebhook(request, env);
