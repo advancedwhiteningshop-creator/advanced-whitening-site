@@ -91,6 +91,17 @@ const DSERS_HEADERS = ["Order_number", "Date", "Country(Short Name of Country)",
   "Turkish ID Number(Turkey; Optional)", "Passport Number(Turkey; Optional)", "RUC(Peru; Optional)",
   "RFC/CURP(Mexico; Optional)", "Birthday(Brazil; Optional)example:DDMMYYYY"];
 
+// DSers/AliExpress expect "UK" (not "GB") and a UK nation as the province.
+const SCOT = ["AB","DD","DG","EH","FK","G","HS","IV","KA","KW","KY","ML","PA","PH","TD","ZE"];
+const WALES = ["CF","LD","LL","NP","SA"];
+function ukNation(postcode) {
+  const area = (String(postcode || "").toUpperCase().match(/^[A-Z]+/) || [""])[0];
+  if (area === "BT") return "Northern Ireland";
+  if (SCOT.includes(area)) return "Scotland";
+  if (WALES.includes(area)) return "Wales";
+  return "England";
+}
+
 const csvCell = v => {
   const t = v == null ? "" : String(v);
   return /[",\n\r]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t;
@@ -126,9 +137,10 @@ async function dsersExport(url, env) {
       for (const part of s.metadata.packs.split(",")) {
         const [id, qty] = part.split("x");
         if (!DSERS_SKU[id]) continue;
-        rows.push([orderNo, date, a.country || "GB", DSERS_PRODUCT_ID, DSERS_SKU[id], qty || "1", "",
+        const isUK = !a.country || a.country === "GB";
+        rows.push([orderNo, date, isUK ? "UK" : a.country, DSERS_PRODUCT_ID, DSERS_SKU[id], qty || "1", "",
           ship.name || cust.name || "", cust.phone || "", cust.email || "",
-          a.line1 || "", a.line2 || "", a.state || a.city || "", a.city || "", a.postal_code || ""]);
+          a.line1 || "", a.line2 || "", isUK ? ukNation(a.postal_code) : (a.state || a.city || ""), a.city || "", a.postal_code || ""]);
       }
     }
     if (!d.has_more || !d.data.length) break;
