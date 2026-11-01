@@ -275,7 +275,10 @@ async function stripeWebhook(request, env) {
 // Emails each customer their tracking number once. "Sent" is recorded on the Stripe
 // PaymentIntent metadata (tracking_number, tracking_emailed) so repeat calls never re-send.
 // Add &dry=1 to see what would happen without sending. GET /admin/tracking?token=...&test=1 sends a sample to hello@.
-const trackUrl = n => "https://t.17track.net/en#nums=" + encodeURIComponent(n);
+// Royal Mail tracking page; AliExpress/Cainiao-only numbers (LP..., ...CN) fall back to 17TRACK.
+const trackUrl = n => /^LP|CN$/i.test(n)
+  ? "https://t.17track.net/en#nums=" + encodeURIComponent(n)
+  : "https://www.royalmail.com/track-your-item#/tracking-results/" + encodeURIComponent(n);
 
 function trackingEmail(s, tracking) {
   const orderNo = "AW-" + s.id.slice(-10).toUpperCase();
