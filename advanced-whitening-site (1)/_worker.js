@@ -145,6 +145,102 @@ async function dsersExport(url, env) {
   }});
 }
 
+// ---------------------------------------------------------------------------
+// POST /api/stripe-webhook  —  Stripe "checkout.session.completed" -> order confirmation email
+// Secrets: STRIPE_WEBHOOK_SECRET (whsec_...), ZEPTOMAIL_TOKEN (Send Mail token),
+//          ZEPTOMAIL_URL optional (defaults to the AU endpoint https://cpaas.zoho.com.au/v1.1/email)
+const SHOP_FROM = {address: "hello@advancedteethwhitening.co.uk", name: "Advanced Whitening"};
+const esc = v => String(v == null ? "" : v).replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+const gbpFmt = pence => "£" + (pence / 100).toFixed(2);
+
+async function hmacHex(secret, msg) {
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), {name: "HMAC", hash: "SHA-256"}, false, ["sign"]);
+  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(msg));
+  return [...new Uint8Array(sig)].map(b => b.toString(16).padStart(2, "0")).join("");
+}
+
+async function verifyStripe(body, header, secret) {
+  if (!header || !secret) return false;
+  const parts = Object.fromEntries(header.split(",").map(p => p.split("=")).filter(p => p.length === 2 && p[0] === "t").map(p => [p[0], p[1]]));
+  const sigs = header.split(",").filter(p => p.startsWith("v1=")).map(p => p.slice(3));
+  const t = Number(parts.t);
+  if (!t || !sigs.length || Math.abs(Date.now() / 1000 - t) > 300) return false;
+  const expected = await hmacHex(secret, `${t}.${body}`);
+  return sigs.some(s => s.length === expected.length && s === expected);
+}
+
+function confirmationEmail(s) {
+  const orderNo = "AW-" + s.id.slice(-10).toUpperCase();
+  const ship = (s.collected_information && s.collected_information.shipping_details) || s.shipping_details || {};
+  const cust = s.customer_details || {};
+  const a = ship.address || cust.address || {};
+  const name = ship.name || cust.name || "";
+  const first = name.split(" ")[0] || "there";
+  // line prices, worked out exactly as the checkout charges them
+  const parsed = (s.metadata.packs || "").split(",").map(part => { const [id, q] = part.split("x"); return [id, Number(q) || 1]; }).filter(([id]) => PACKS[id]);
+  const fullId = parsed.reduce((m, [id]) => (m === null || PACKS[id].pence > PACKS[m].pence ? id : m), null);
+  const multi = parsed.reduce((a, [, q]) => a + q, 0) >= 2;
+  const lines = parsed.map(([id, qty]) => {
+    const p = PACKS[id];
+    const disc = Math.round(p.pence * (1 - DISCOUNT));
+    const fullUnits = id === fullId ? 1 : 0;
+    const linePence = multi ? fullUnits * p.pence + (qty - fullUnits) * disc : p.pence * qty;
+    const td = 'style="padding:8px 0;border-bottom:1px solid #e3e7f0';
+    return `<tr><td ${td}">Crest 3D White Whitestrips LUXE · ${p.pouches} pouches (${esc(p.name)})<br><span style="color:#59617f;font-size:13px">${gbpFmt(p.pence)} each</span></td><td ${td};text-align:center">${qty}</td><td ${td};text-align:right">${gbpFmt(linePence)}</td></tr>`;
+  }).join("");
+  const addr = [name, a.line1, a.line2, a.city, a.state, a.postal_code, a.country === "GB" ? "United Kingdom" : a.country].filter(Boolean).map(esc).join("<br>");
+  const html = `<!doctype html><html><body style="margin:0;background:#f4f6fb;font-family:Arial,Helvetica,sans-serif;color:#131838">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f4f6fb;padding:24px 0"><tr><td align="center">
+<table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background:#ffffff;border-radius:16px;overflow:hidden">
+<tr><td style="background:#4c2fd0;color:#ffffff;padding:22px 28px;font-size:20px;font-weight:bold">Advanced Whitening</td></tr>
+<tr><td style="padding:28px">
+<h1 style="margin:0 0 8px;font-size:24px">Thanks for your order, ${esc(first)}!</h1>
+<p style="margin:0 0 20px;color:#59617f">Order <b>${orderNo}</b> is confirmed and your payment has been received.</p>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="font-size:15px">
+<tr><th align="left" style="padding-bottom:6px">Item</th><th style="padding-bottom:6px">Qty</th><th align="right" style="padding-bottom:6px">Price</th></tr>${lines}
+<tr><td style="padding:8px 0;color:#59617f">Delivery (tracked)</td><td></td><td style="padding:8px 0;text-align:right;color:#59617f">Free</td></tr>
+<tr><td style="padding:12px 0;font-weight:bold">Total paid</td><td></td><td style="padding:12px 0;text-align:right;font-weight:bold">${gbpFmt(s.amount_total || 0)}</td></tr></table>
+<h2 style="font-size:17px;margin:24px 0 8px">Delivering to</h2><p style="margin:0;line-height:1.5">${addr}</p>
+<h2 style="font-size:17px;margin:24px 0 8px">What happens next</h2>
+<ol style="margin:0;padding-left:20px;line-height:1.6"><li>We prepare your order. It ships within 3 working days.</li><li>We email you a tracking number as soon as it's on its way.</li><li>Delivery usually takes 5–10 working days.</li></ol>
+<h2 style="font-size:17px;margin:24px 0 8px">Getting the best results</h2>
+<ul style="margin:0;padding-left:20px;line-height:1.6"><li>Use one pouch (upper and lower strip) once a day for 30 minutes.</li><li>Don't brush immediately before applying; wait about 30 minutes.</li><li>Avoid coffee, tea, red wine and other staining food and drink for 1–2 hours after.</li></ul>
+<p style="margin:24px 0 0;line-height:1.6">Questions, or need to change your address? Reply to this email or contact <a href="mailto:hello@advancedteethwhitening.co.uk" style="color:#4c2fd0">hello@advancedteethwhitening.co.uk</a>. Our <a href="https://advancedteethwhitening.co.uk/returns/" style="color:#4c2fd0">returns policy</a> is on our website.</p>
+</td></tr>
+<tr><td style="padding:18px 28px;background:#f4f6fb;color:#59617f;font-size:12px">Advanced Whitening · advancedteethwhitening.co.uk</td></tr>
+</table></td></tr></table></body></html>`;
+  return {orderNo, to: cust.email, toName: name, subject: `Order confirmed – ${orderNo}`, html};
+}
+
+async function stripeWebhook(request, env) {
+  const body = await request.text();
+  if (!(await verifyStripe(body, request.headers.get("stripe-signature"), env.STRIPE_WEBHOOK_SECRET)))
+    return new Response("Invalid signature", {status: 400});
+  let event; try { event = JSON.parse(body); } catch { return new Response("Bad JSON", {status: 400}); }
+  if (event.type !== "checkout.session.completed") return new Response("Ignored", {status: 200});
+  const s = event.data && event.data.object;
+  if (!s || s.payment_status !== "paid" || !s.metadata || !s.metadata.packs) return new Response("Not a paid shop order", {status: 200});
+  const mail = confirmationEmail(s);
+  if (!mail.to) return new Response("No customer email", {status: 200});
+  if (!env.ZEPTOMAIL_TOKEN) return new Response("Email not configured", {status: 500});
+  const auth = env.ZEPTOMAIL_TOKEN.startsWith("Zoho-enczapikey") ? env.ZEPTOMAIL_TOKEN : `Zoho-enczapikey ${env.ZEPTOMAIL_TOKEN}`;
+  const r = await fetch(env.ZEPTOMAIL_URL || "https://cpaas.zoho.com.au/v1.1/email", {
+    method: "POST",
+    headers: {"Content-Type": "application/json", "Accept": "application/json", "Authorization": auth},
+    body: JSON.stringify({
+      from: SHOP_FROM,
+      to: [{email_address: {address: mail.to, name: mail.toName || mail.to}}],
+      subject: mail.subject,
+      htmlbody: mail.html,
+    }),
+  });
+  if (!r.ok) {
+    console.log("zeptomail error", r.status, (await r.text()).slice(0, 300));
+    return new Response("Email send failed", {status: 502});   // Stripe will retry
+  }
+  return new Response("Sent " + mail.orderNo, {status: 200});
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -153,6 +249,10 @@ export default {
       return checkout(request, env);
     }
     if (url.pathname === "/admin/dsers-orders.csv") return dsersExport(url, env);
+    if (url.pathname === "/api/stripe-webhook") {
+      if (request.method !== "POST") return new Response("Method not allowed", {status: 405});
+      return stripeWebhook(request, env);
+    }
     return env.ASSETS.fetch(request);
   },
 };
