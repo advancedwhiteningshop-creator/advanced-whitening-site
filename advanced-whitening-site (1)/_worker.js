@@ -212,17 +212,7 @@ function confirmationEmail(s) {
   return {orderNo, to: cust.email, toName: name, subject: `Order confirmed – ${orderNo}`, html};
 }
 
-async function stripeWebhook(request, env) {
-  const body = await request.text();
-  if (!(await verifyStripe(body, request.headers.get("stripe-signature"), env.STRIPE_WEBHOOK_SECRET)))
-    return new Response("Invalid signature", {status: 400});
-  let event; try { event = JSON.parse(body); } catch { return new Response("Bad JSON", {status: 400}); }
-  if (event.type !== "checkout.session.completed") return new Response("Ignored", {status: 200});
-  const s = event.data && event.data.object;
-  if (!s || s.payment_status !== "paid" || !s.metadata || !s.metadata.packs) return new Response("Not a paid shop order", {status: 200});
-  const mail = confirmationEmail(s);
-  if (!mail.to) return new Response("No customer email", {status: 200});
-  if (!env.ZEPTOMAIL_TOKEN) return new Response("Email not configured", {status: 500});
+async function sendMail(env, mail) {
   const auth = env.ZEPTOMAIL_TOKEN.startsWith("Zoho-enczapikey") ? env.ZEPTOMAIL_TOKEN : `Zoho-enczapikey ${env.ZEPTOMAIL_TOKEN}`;
   const r = await fetch(env.ZEPTOMAIL_URL || "https://cpaas.zoho.com.au/v1.1/email", {
     method: "POST",
@@ -234,10 +224,37 @@ async function stripeWebhook(request, env) {
       htmlbody: mail.html,
     }),
   });
-  if (!r.ok) {
-    console.log("zeptomail error", r.status, (await r.text()).slice(0, 300));
-    return new Response("Email send failed", {status: 502});   // Stripe will retry
-  }
+  const text = await r.text();
+  if (!r.ok) console.log("zeptomail error", r.status, text.slice(0, 300));
+  return {ok: r.ok, status: r.status, text: text.slice(0, 300)};
+}
+
+// GET /admin/test-email?token=...  -> sends a sample confirmation to hello@ only
+async function testEmail(url, env) {
+  if (!env.ADMIN_TOKEN || url.searchParams.get("token") !== env.ADMIN_TOKEN) return new Response("Not found", {status: 404});
+  if (!env.ZEPTOMAIL_TOKEN) return new Response("ZEPTOMAIL_TOKEN missing", {status: 500});
+  const sample = {id: "cs_test_SAMPLE00000", payment_status: "paid", amount_total: 11490, metadata: {packs: "p10x1,p20x1"},
+    customer_details: {email: SHOP_FROM.address, name: "Sample Customer"},
+    collected_information: {shipping_details: {name: "Sample Customer", address: {line1: "1 Sample Street", city: "Bath", postal_code: "BA1 1AA", country: "GB"}}}};
+  const mail = confirmationEmail(sample);
+  mail.subject = "[TEST] " + mail.subject;
+  const res = await sendMail(env, mail);
+  return new Response(JSON.stringify(res), {status: res.ok ? 200 : 502, headers: {"Content-Type": "application/json"}});
+}
+
+async function stripeWebhook(request, env) {
+  const body = await request.text();
+  if (!(await verifyStripe(body, request.headers.get("stripe-signature"), env.STRIPE_WEBHOOK_SECRET)))
+    return new Response("Invalid signature", {status: 400});
+  let event; try { event = JSON.parse(body); } catch { return new Response("Bad JSON", {status: 400}); }
+  if (event.type !== "checkout.session.completed") return new Response("Ignored", {status: 200});
+  const s = event.data && event.data.object;
+  if (!s || s.payment_status !== "paid" || !s.metadata || !s.metadata.packs) return new Response("Not a paid shop order", {status: 200});
+  const mail = confirmationEmail(s);
+  if (!mail.to) return new Response("No customer email", {status: 200});
+  if (!env.ZEPTOMAIL_TOKEN) return new Response("Email not configured", {status: 500});
+  const res = await sendMail(env, mail);
+  if (!res.ok) return new Response("Email send failed", {status: 502});   // Stripe will retry
   return new Response("Sent " + mail.orderNo, {status: 200});
 }
 
@@ -249,6 +266,7 @@ export default {
       return checkout(request, env);
     }
     if (url.pathname === "/admin/dsers-orders.csv") return dsersExport(url, env);
+    if (url.pathname === "/admin/test-email") return testEmail(url, env);
     if (url.pathname === "/api/stripe-webhook") {
       if (request.method !== "POST") return new Response("Method not allowed", {status: 405});
       return stripeWebhook(request, env);
