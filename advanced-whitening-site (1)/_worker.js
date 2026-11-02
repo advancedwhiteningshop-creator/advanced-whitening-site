@@ -387,11 +387,13 @@ async function orderSummary(url, env) {
 // Google Ads tag, injected into every HTML page served (so page files don't need re-uploading).
 const GADS_ID = "AW-18549328237";
 const GADS_PURCHASE = "AW-18549328237/Z5vYCOql768dEO2SgY1F";
+const GADS_ATC = "AW-18549328237/u2l6CPaXyrAdEO2SgY1F";
+const GADS_BC = "AW-18549328237/0aIFCPmXyrAdEO2SgY1F";
 const META_PIXEL = "639241914185757";
 const META_HEAD = `<script>!function(f,b,e,v,n,t,s){if(f.fbq)return;n=f.fbq=function(){n.callMethod?n.callMethod.apply(n,arguments):n.queue.push(arguments)};if(!f._fbq)f._fbq=n;n.push=n;n.loaded=!0;n.version='2.0';n.queue=[];t=b.createElement(e);t.async=!0;t.src=v;s=b.getElementsByTagName(e)[0];s.parentNode.insertBefore(t,s)}(window,document,'script','https://connect.facebook.net/en_US/fbevents.js');fbq('init','${META_PIXEL}');fbq('track','PageView');</script>
 <script>(function(){var gbp=function(id){var el=document.getElementById(id);var m=el&&el.textContent.match(/[0-9]+[.][0-9]+|[0-9]+/);return m?parseFloat(m[0]):undefined;};
-document.addEventListener('submit',function(e){if(e.target&&e.target.id==='buyForm'&&window.fbq){fbq('track','AddToCart',{value:gbp('addBtn'),currency:'GBP',content_name:'Crest 3D White LUXE'});}},true);
-document.addEventListener('click',function(e){if(e.target&&e.target.closest&&e.target.closest('#checkoutBtn')&&window.fbq){fbq('track','InitiateCheckout',{value:gbp('drawerTotal'),currency:'GBP'});}},true);})();</script>
+document.addEventListener('submit',function(e){if(e.target&&e.target.id==='buyForm'){var v=gbp('addBtn');if(window.fbq)fbq('track','AddToCart',{value:v,currency:'GBP',content_name:'Crest 3D White LUXE'});if(window.gtag)gtag('event','conversion',{send_to:'${GADS_ATC}',value:v,currency:'GBP'});}},true);
+document.addEventListener('click',function(e){if(e.target&&e.target.closest&&e.target.closest('#checkoutBtn')){var v=gbp('drawerTotal');if(window.fbq)fbq('track','InitiateCheckout',{value:v,currency:'GBP'});if(window.gtag)gtag('event','conversion',{send_to:'${GADS_BC}',value:v,currency:'GBP',transport_type:'beacon'});}},true);})();</script>
 `;
 const GTAG_HEAD = `<script async src="https://www.googletagmanager.com/gtag/js?id=${GADS_ID}"></script>
 <script>window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments);}gtag('js',new Date());gtag('config','${GADS_ID}');</script>
