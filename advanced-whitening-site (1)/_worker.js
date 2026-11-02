@@ -387,16 +387,22 @@ async function orderSummary(url, env) {
 // Google Ads tag, injected into every HTML page served (so page files don't need re-uploading).
 const GADS_ID = "AW-18549328237";
 const GADS_PURCHASE = "AW-18549328237/Z5vYCOql768dEO2SgY1F";
+const META_PIXEL = "639241914185757";
+const META_HEAD = `<script>!function(f,b,e,v,n,t,s){if(f.fbq)return;n=f.fbq=function(){n.callMethod?n.callMethod.apply(n,arguments):n.queue.push(arguments)};if(!f._fbq)f._fbq=n;n.push=n;n.loaded=!0;n.version='2.0';n.queue=[];t=b.createElement(e);t.async=!0;t.src=v;s=b.getElementsByTagName(e)[0];s.parentNode.insertBefore(t,s)}(window,document,'script','https://connect.facebook.net/en_US/fbevents.js');fbq('init','${META_PIXEL}');fbq('track','PageView');</script>
+<script>(function(){var gbp=function(id){var el=document.getElementById(id);var m=el&&el.textContent.match(/[0-9]+[.][0-9]+|[0-9]+/);return m?parseFloat(m[0]):undefined;};
+document.addEventListener('submit',function(e){if(e.target&&e.target.id==='buyForm'&&window.fbq){fbq('track','AddToCart',{value:gbp('addBtn'),currency:'GBP',content_name:'Crest 3D White LUXE'});}},true);
+document.addEventListener('click',function(e){if(e.target&&e.target.closest&&e.target.closest('#checkoutBtn')&&window.fbq){fbq('track','InitiateCheckout',{value:gbp('drawerTotal'),currency:'GBP'});}},true);})();</script>
+`;
 const GTAG_HEAD = `<script async src="https://www.googletagmanager.com/gtag/js?id=${GADS_ID}"></script>
 <script>window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments);}gtag('js',new Date());gtag('config','${GADS_ID}');</script>
 `;
 const CONVERSION_JS = `<script>(function(){var id=new URLSearchParams(location.search).get("session_id");if(!id)return;var k="aw_conv_"+id;try{if(localStorage.getItem(k))return;}catch(e){}
 fetch("/api/order?session_id="+encodeURIComponent(id)).then(function(r){return r.ok?r.json():null;}).then(function(d){if(!d||!d.paid)return;
-gtag("event","conversion",{send_to:"${GADS_PURCHASE}",value:d.value,currency:d.currency,transaction_id:d.order});try{localStorage.setItem(k,"1");}catch(e){}}).catch(function(){});})();</script>
+gtag("event","conversion",{send_to:"${GADS_PURCHASE}",value:d.value,currency:d.currency,transaction_id:d.order});if(window.fbq)fbq("track","Purchase",{value:d.value,currency:d.currency},{eventID:d.order});try{localStorage.setItem(k,"1");}catch(e){}}).catch(function(){});})();</script>
 `;
 async function withTags(res, url) {
   if (!(res.headers.get("content-type") || "").includes("text/html")) return res;
-  let rw = new HTMLRewriter().on("head", {element(e) { e.append(GTAG_HEAD, {html: true}); }});
+  let rw = new HTMLRewriter().on("head", {element(e) { e.append(GTAG_HEAD + META_HEAD, {html: true}); }});
   if (url.pathname.startsWith("/thank-you")) rw = rw.on("body", {element(e) { e.append(CONVERSION_JS, {html: true}); }});
   return rw.transform(res);
 }
