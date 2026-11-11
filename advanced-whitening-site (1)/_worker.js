@@ -181,9 +181,13 @@ async function dsersExport(url, env) {
 // even when the buyer never reached the thank-you page or blocked the tag. Google ignores rows it
 // has already imported (same click ID + conversion name + time), so the overlapping window is safe.
 // The conversion name must match the "Import from clicks" conversion action in Google Ads.
+// Google is given only &key= (derived from ADMIN_TOKEN), never the admin token itself, because the
+// admin token also unlocks the customer-data exports. The file holds no personal data.
 const GADS_OFFLINE_NAME = "Purchase (Stripe)";
 async function gadsConversions(url, env) {
-  if (!env.ADMIN_TOKEN || url.searchParams.get("token") !== env.ADMIN_TOKEN) return new Response("Not found", {status: 404});
+  if (!env.ADMIN_TOKEN) return new Response("Not found", {status: 404});
+  const key = (await hmacHex(env.ADMIN_TOKEN, "gads-conversions")).slice(0, 32);
+  if (url.searchParams.get("key") !== key && url.searchParams.get("token") !== env.ADMIN_TOKEN) return new Response("Not found", {status: 404});
   if (!env.STRIPE_SECRET_KEY) return new Response("Stripe not connected", {status: 503});
   const days = Math.min(Math.max(Number(url.searchParams.get("days")) || 30, 1), 90);
   const since = Math.floor(Date.now() / 1000) - days * 86400;
