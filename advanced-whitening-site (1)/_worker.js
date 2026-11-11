@@ -17,6 +17,21 @@ const PRODUCT = "Crest 3D White Whitestrips LUXE";
 const json = (body, status = 200) =>
   new Response(JSON.stringify(body), {status, headers: {"Content-Type": "application/json"}});
 
+// Traffic source saved by the browser in the first-party "aw_src" cookie: the latest Google Ads
+// click IDs (gclid / gbraid / wbraid), UTM tags, the external referrer and when they landed.
+const SRC_KEYS = ["gclid", "gbraid", "wbraid", "fbclid", "utm_source", "utm_medium", "utm_campaign", "utm_term", "ref", "landed"];
+function readSource(request) {
+  const m = (request.headers.get("cookie") || "").match(/(?:^|;\s*)aw_src=([^;]*)/);
+  if (!m) return {};
+  let o; try { o = JSON.parse(decodeURIComponent(m[1])); } catch { return {}; }
+  const out = {};
+  for (const k of SRC_KEYS) {
+    const v = o && o[k];
+    if (typeof v === "string" && v) out["src_" + k] = v.replace(/[^\w.\-~:/%+=]/g, "").slice(0, 200);
+  }
+  return out;
+}
+
 async function checkout(request, env) {
   if (!env.STRIPE_SECRET_KEY) return json({error: "Checkout is not connected yet."}, 503);
 
@@ -51,6 +66,8 @@ async function checkout(request, env) {
   f.append("phone_number_collection[enabled]", "true");
   f.append("metadata[packs]", Object.entries(merged).map(([id, q]) => `${id}x${q}`).join(","));
   f.append("metadata[discount]", discounted && DISCOUNT ? `extra_packs_${DISCOUNT*100}pct` : "none");
+  // ad-click / traffic source captured by the site in the "aw_src" cookie (see SRC_JS)
+  for (const [k, v] of Object.entries(readSource(request))) f.append(`metadata[${k}]`, v);
 
   lines.forEach(([id, qty, unit, isDisc], i) => {
     const p = PACKS[id];
@@ -155,6 +172,38 @@ async function dsersExport(url, env) {
     "Content-Disposition": `attachment; filename="dsers-orders-${new Date().toISOString().slice(0, 10)}.csv"`,
     "Cache-Control": "no-store",
   }});
+}
+
+// ---------------------------------------------------------------------------
+// GET /admin/gads-conversions.csv?token=...&days=30
+// Every paid order that came from a Google Ads click, in Google Ads' offline-conversion upload
+// format, for a scheduled HTTPS upload in Google Ads (Goals > Uploads > Schedules). Counts sales
+// even when the buyer never reached the thank-you page or blocked the tag. Google ignores rows it
+// has already imported (same click ID + conversion name + time), so the overlapping window is safe.
+// The conversion name must match the "Import from clicks" conversion action in Google Ads.
+const GADS_OFFLINE_NAME = "Purchase (Stripe)";
+async function gadsConversions(url, env) {
+  if (!env.ADMIN_TOKEN || url.searchParams.get("token") !== env.ADMIN_TOKEN) return new Response("Not found", {status: 404});
+  if (!env.STRIPE_SECRET_KEY) return new Response("Stripe not connected", {status: 503});
+  const days = Math.min(Math.max(Number(url.searchParams.get("days")) || 30, 1), 90);
+  const since = Math.floor(Date.now() / 1000) - days * 86400;
+  const rows = [["Google Click ID", "Conversion Name", "Conversion Time", "Conversion Value", "Conversion Currency"]];
+  let after = null;
+  for (let page = 0; page < 20; page++) {
+    const q = new URLSearchParams({limit: "100", "created[gte]": String(since)});
+    if (after) q.set("starting_after", after);
+    let d; try { d = await stripeApi(env, "checkout/sessions?" + q); } catch (e) { return new Response(String(e.message || e), {status: 502}); }
+    for (const s of d.data) {
+      const md = s.metadata || {};
+      if (s.payment_status !== "paid" || !md.packs || !md.src_gclid) continue;
+      const t = new Date(s.created * 1000).toISOString().replace("T", " ").slice(0, 19);
+      rows.push([md.src_gclid, GADS_OFFLINE_NAME, t, ((s.amount_total || 0) / 100).toFixed(2), String(s.currency || "gbp").toUpperCase()]);
+    }
+    if (!d.has_more || !d.data.length) break;
+    after = d.data[d.data.length - 1].id;
+  }
+  const body = "Parameters:TimeZone=+0000\r\n" + rows.map(r => r.map(csvCell).join(",")).join("\r\n") + "\r\n";
+  return new Response(body, {headers: {"Content-Type": "text/csv; charset=utf-8", "Cache-Control": "no-store"}});
 }
 
 // ---------------------------------------------------------------------------
@@ -380,8 +429,24 @@ async function orderSummary(url, env) {
   const r = await fetch("https://api.stripe.com/v1/checkout/sessions/" + id, {headers: {"Authorization": `Bearer ${env.STRIPE_SECRET_KEY}`}});
   if (!r.ok) return new Response('{"paid":false}', {status: 404, headers: h});
   const s = await r.json();
+  // SHA-256 of the normalised email, for Google Ads enhanced conversions (the plain email is never returned)
+  const em = await sha256Hex(normEmail(s.customer_details && s.customer_details.email));
   return new Response(JSON.stringify({paid: s.payment_status === "paid", order: "AW-" + s.id.slice(-10).toUpperCase(),
-    value: (s.amount_total || 0) / 100, currency: String(s.currency || "gbp").toUpperCase()}), {headers: h});
+    value: (s.amount_total || 0) / 100, currency: String(s.currency || "gbp").toUpperCase(), em}), {headers: h});
+}
+
+// Google's normalisation for enhanced conversions: trim, lower-case, and drop dots before @ for gmail/googlemail.
+function normEmail(e) {
+  const t = String(e || "").trim().toLowerCase();
+  const at = t.lastIndexOf("@");
+  if (at < 1) return "";
+  const [user, dom] = [t.slice(0, at), t.slice(at + 1)];
+  return (dom === "gmail.com" || dom === "googlemail.com" ? user.replace(/\./g, "") : user) + "@" + dom;
+}
+async function sha256Hex(t) {
+  if (!t) return "";
+  const b = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(t));
+  return [...new Uint8Array(b)].map(x => x.toString(16).padStart(2, "0")).join("");
 }
 
 // Google Ads tag, injected into every HTML page served (so page files don't need re-uploading).
@@ -398,13 +463,25 @@ document.addEventListener('click',function(e){if(e.target&&e.target.closest&&e.t
 const GTAG_HEAD = `<script async src="https://www.googletagmanager.com/gtag/js?id=${GADS_ID}"></script>
 <script>window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments);}gtag('js',new Date());gtag('config','${GADS_ID}');</script>
 `;
-const CONVERSION_JS = `<script>(function(){var id=new URLSearchParams(location.search).get("session_id");if(!id)return;var k="aw_conv_"+id;try{if(localStorage.getItem(k))return;}catch(e){}
+// Saves where a visitor came from (latest Google Ads click ID / UTM tags / external referrer) in a
+// first-party cookie for 90 days, so /api/checkout can attach it to the Stripe order. A visit with no
+// new source (typing the address, internal links, returning from Stripe) keeps the earlier one, and
+// a Google Ads click ID is kept for its 90 days even if a later visit comes from somewhere else.
+const SRC_JS = `<script>(function(){try{var p=new URLSearchParams(location.search),o={},n=0;
+["gclid","gbraid","wbraid","fbclid","utm_source","utm_medium","utm_campaign","utm_term"].forEach(function(k){var v=p.get(k);if(v){o[k]=v.slice(0,200);n++;}});
+var r="";try{r=document.referrer?new URL(document.referrer).hostname:"";}catch(e){}
+if(r&&r!==location.hostname&&!/(^|\\.)stripe\\.com$/.test(r)){o.ref=r;n++;}
+if(!n)return;o.landed=new Date().toISOString();
+if(!o.gclid&&!o.gbraid&&!o.wbraid){var m=document.cookie.match(/(?:^|;\\s*)aw_src=([^;]*)/);if(m){try{var old=JSON.parse(decodeURIComponent(m[1]));["gclid","gbraid","wbraid"].forEach(function(k){if(old[k])o[k]=old[k];});}catch(e){}}}
+document.cookie="aw_src="+encodeURIComponent(JSON.stringify(o))+";path=/;max-age=7776000;SameSite=Lax;Secure";}catch(e){}})();</script>
+`;
+const CONVERSION_JS =`<script>(function(){var id=new URLSearchParams(location.search).get("session_id");if(!id)return;var k="aw_conv_"+id;try{if(localStorage.getItem(k))return;}catch(e){}
 fetch("/api/order?session_id="+encodeURIComponent(id)).then(function(r){return r.ok?r.json():null;}).then(function(d){if(!d||!d.paid)return;
-gtag("event","conversion",{send_to:"${GADS_PURCHASE}",value:d.value,currency:d.currency,transaction_id:d.order});if(window.fbq)fbq("track","Purchase",{value:d.value,currency:d.currency},{eventID:d.order});try{localStorage.setItem(k,"1");}catch(e){}}).catch(function(){});})();</script>
+if(d.em)gtag("set","user_data",{sha256_email_address:d.em});gtag("event","conversion",{send_to:"${GADS_PURCHASE}",value:d.value,currency:d.currency,transaction_id:d.order});if(window.fbq)fbq("track","Purchase",{value:d.value,currency:d.currency},{eventID:d.order});try{localStorage.setItem(k,"1");}catch(e){}}).catch(function(){});})();</script>
 `;
 async function withTags(res, url) {
   if (!(res.headers.get("content-type") || "").includes("text/html")) return res;
-  let rw = new HTMLRewriter().on("head", {element(e) { e.append(GTAG_HEAD + META_HEAD, {html: true}); }});
+  let rw = new HTMLRewriter().on("head", {element(e) { e.append(SRC_JS + GTAG_HEAD + META_HEAD, {html: true}); }});
   if (url.pathname.startsWith("/thank-you")) rw = rw.on("body", {element(e) { e.append(CONVERSION_JS, {html: true}); }});
   return rw.transform(res);
 }
@@ -417,6 +494,7 @@ export default {
       return checkout(request, env);
     }
     if (url.pathname === "/admin/dsers-orders.csv") return dsersExport(url, env);
+    if (url.pathname === "/admin/gads-conversions.csv") return gadsConversions(url, env);
     if (url.pathname === "/admin/test-email") return testEmail(url, env);
     if (url.pathname === "/api/order") return orderSummary(url, env);
     if (url.pathname === "/admin/tracking") return trackingUpdate(request, url, env);
