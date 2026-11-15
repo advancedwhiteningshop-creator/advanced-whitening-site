@@ -424,11 +424,12 @@ footer.site{border-top:1px solid var(--line);padding-block:44px 120px;font-size:
 .stage{isolation:isolate}
 .stage img{mix-blend-mode:multiply;position:relative;z-index:1}
 .stage .tag{z-index:3}
+.thumbs img{mix-blend-mode:multiply}
 @media (max-width:900px){
   main#top{display:flex;flex-direction:column}
   main#top > #shop{order:-1;padding-top:12px}
   #shop .gallery{position:static;grid-template-columns:1fr;gap:8px}
-  #shop .gallery .thumbs{display:none}
+  #shop .gallery .thumbs{gap:6px}
   #shop .stage{aspect-ratio:auto;height:170px;display:flex;align-items:center;justify-content:center;padding:6px}
   #shop .stage img{height:150px;width:auto;max-width:100%;object-fit:contain}
   #shop .buy p.sub{display:none}
