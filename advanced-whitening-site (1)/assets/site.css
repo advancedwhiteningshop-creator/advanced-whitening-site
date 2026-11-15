@@ -417,3 +417,23 @@ footer.site{border-top:1px solid var(--line);padding-block:44px 120px;font-size:
 .thanks h1{font-size:clamp(32px,5vw,50px);font-weight:800}
 .thanks p{margin-top:16px;font-size:18px}
 .thanks .btn{margin-top:28px}
+
+/* --- Nov 2026: mobile buy box first, delivery note, image background --- */
+.del-note{margin:2px 0 12px;font-size:14px;line-height:1.35}
+.del-note .tick{color:var(--ok);font-weight:800}
+.stage{isolation:isolate}
+.stage img{mix-blend-mode:multiply;position:relative;z-index:1}
+.stage .tag{z-index:3}
+@media (max-width:900px){
+  main#top{display:flex;flex-direction:column}
+  main#top > #shop{order:-1;padding-top:12px}
+  #shop .gallery{position:static;grid-template-columns:1fr;gap:8px}
+  #shop .gallery .thumbs{display:none}
+  #shop .stage{aspect-ratio:auto;height:170px;display:flex;align-items:center;justify-content:center;padding:6px}
+  #shop .stage img{height:150px;width:auto;max-width:100%;object-fit:contain}
+  #shop .buy p.sub{display:none}
+  #shop .buy h2{font-size:24px;margin:4px 0}
+  #shop .buy .price{margin:4px 0}
+  #buyForm .sizes{row-gap:16px}
+  #buyForm .size label{padding:16px 6px 8px}
+}
