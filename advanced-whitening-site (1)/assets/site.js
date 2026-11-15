@@ -117,7 +117,7 @@ if ($("sizes")) {
   });
   render();
   const st = $("sticky");
-  if (st) new IntersectionObserver(([en]) => { const past = !en.isIntersecting && en.boundingClientRect.top < 0; st.classList.toggle("on", past); st.setAttribute("aria-hidden", String(!past)); }).observe($("addBtn"));
+  if (st) new IntersectionObserver(([en]) => { const past = !en.isIntersecting; st.classList.toggle("on", past); st.setAttribute("aria-hidden", String(!past)); }).observe($("addBtn"));
 }
 
 // ---------- gallery, before/after slider, rails ----------
